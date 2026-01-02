@@ -1,17 +1,17 @@
+"""
+gbif_cooccurrence.py
 
+Fetches GBIF occurrence data for Masai Mara
+and computes spatial co-occurrence zones
+"""
 
-# ================================
-# IMPORTS
-# ================================
 import pandas as pd
 import geopandas as gpd
-import folium
 from pygbif import occurrences as occ
-from shapely.geometry import Point
 
-# ================================
-# LOAD GBIF DATA (MASAI MARA)
-# ================================
+# ------------------------------------
+# MASAI MARA BOUNDING POLYGON (WKT)
+# ------------------------------------
 mara_wkt = (
     "POLYGON(("
     "34.7 -1.8, "
@@ -21,6 +21,11 @@ mara_wkt = (
     "34.7 -1.8"
     "))"
 )
+
+# ------------------------------------
+# FETCH GBIF DATA
+# ------------------------------------
+print("Fetching GBIF data...")
 
 records = occ.search(
     geometry=mara_wkt,
@@ -33,9 +38,20 @@ df = pd.DataFrame(records["results"])
 df = df[[
     "species",
     "decimalLatitude",
-    "decimalLongitude"
+    "decimalLongitude",
+    "eventDate"
 ]].dropna()
 
+print(f"Records fetched: {len(df)}")
+
+# ------------------------------------
+# SAVE RAW SIGHTINGS
+# ------------------------------------
+df.to_csv("masai_mara_occurrences.csv", index=False)
+
+# ------------------------------------
+# GEO DATAFRAME
+# ------------------------------------
 gdf = gpd.GeoDataFrame(
     df,
     geometry=gpd.points_from_xy(
@@ -45,16 +61,20 @@ gdf = gpd.GeoDataFrame(
     crs="EPSG:4326"
 )
 
-# ================================
-# SELECT TWO MOST COMMON SPECIES (COLAB SAFE)
-# ================================
+# ------------------------------------
+# SELECT TOP 2 SPECIES (DATA-DRIVEN)
+# ------------------------------------
 top_species = gdf["species"].value_counts().head(2).index.tolist()
 species_a, species_b = top_species
 
-# ================================
+print("Top species:")
+print(species_a)
+print(species_b)
+
+# ------------------------------------
 # GRID-BASED CO-OCCURRENCE
-# ================================
-gdf_m = gdf.to_crs(epsg=32736)  # meters
+# ------------------------------------
+gdf_m = gdf.to_crs(epsg=32736)  # meters (UTM zone)
 
 grid_size = 5000  # 5 km
 
@@ -75,40 +95,14 @@ co_gdf = gpd.GeoDataFrame(
     crs="EPSG:32736"
 ).to_crs(epsg=4326)
 
-# ================================
-# FOLIUM MAP (REAL WORLD MAP)
-# ================================
-m = folium.Map(location=[-1.5, 35.1], zoom_start=10)
+# ------------------------------------
+# SAVE CO-OCCURRENCE ZONES
+# ------------------------------------
+co_gdf[["gx", "gy", "geometry"]].to_csv(
+    "cooccurrence_zones.csv",
+    index=False
+)
 
-# Species A
-for _, r in gdf[gdf["species"] == species_a].iterrows():
-    folium.CircleMarker(
-        [r.geometry.y, r.geometry.x],
-        radius=3,
-        color="blue",
-        fill=True,
-        fill_opacity=0.4,
-    ).add_to(m)
+print("Co-occurrence zones saved.")
+print("Done.")
 
-# Species B
-for _, r in gdf[gdf["species"] == species_b].iterrows():
-    folium.CircleMarker(
-        [r.geometry.y, r.geometry.x],
-        radius=3,
-        color="green",
-        fill=True,
-        fill_opacity=0.4,
-    ).add_to(m)
-
-# Co-occurrence zones
-for _, r in co_gdf.iterrows():
-    folium.CircleMarker(
-        [r.geometry.y, r.geometry.x],
-        radius=10,
-        color="orange",
-        fill=True,
-        fill_opacity=0.8,
-        popup=f"{species_a} + {species_b}"
-    ).add_to(m)
-
-m
