@@ -8,15 +8,15 @@ from streamlit_folium import st_folium
 # PAGE CONFIG
 # --------------------------------------------------
 st.set_page_config(layout="wide")
-st.title("Masai Mara Wildlife Sightings Dashboard")
+st.title("Masai Mara Wildlife Co-occurrence Dashboard")
 
 st.markdown("""
-Interactive geospatial dashboard to explore **Big Five wildlife sightings**
-in Masai Mara by **species**, **season**, and **year range**.
+Interactive dashboard to explore **where multiple Big Five species are spotted together**
+by **species**, **season**, and **year range**.
 """)
 
 # --------------------------------------------------
-# LOAD DATA (CSV ONLY – CLOUD SAFE)
+# LOAD DATA (CSV – CLOUD SAFE)
 # --------------------------------------------------
 @st.cache_data
 def load_data():
@@ -89,7 +89,8 @@ year_range = st.sidebar.slider(
     (2000, 2025)
 )
 
-show_counts = st.sidebar.checkbox("Show counts on map", value=True)
+show_points = st.sidebar.checkbox("Show individual sightings", value=True)
+show_cooccur = st.sidebar.checkbox("Show co-occurrence zones", value=True)
 
 # --------------------------------------------------
 # FILTER DATA
@@ -104,25 +105,39 @@ if selected_season != "All":
     filtered = filtered[filtered["season"] == selected_season]
 
 # --------------------------------------------------
-# GRID + COUNTS
+# CO-OCCURRENCE ANALYSIS (GRID BASED)
 # --------------------------------------------------
-filtered["lat_bin"] = filtered.geometry.y.round(2)
-filtered["lon_bin"] = filtered.geometry.x.round(2)
+# Project to meters for grid calculation
+filtered_m = filtered.to_crs(epsg=32736)  # UTM zone for Kenya
 
-zone_counts = (
-    filtered
-    .groupby(["species", "lat_bin", "lon_bin"])
-    .size()
-    .reset_index(name="count")
+grid_size = 5000  # 5 km
+
+filtered_m["gx"] = (filtered_m.geometry.x // grid_size).astype(int)
+filtered_m["gy"] = (filtered_m.geometry.y // grid_size).astype(int)
+
+# Count unique species per grid cell
+cooccur_cells = (
+    filtered_m
+    .groupby(["gx", "gy"])["species"]
+    .nunique()
+    .reset_index(name="species_count")
 )
 
-# --------------------------------------------------
-# METRICS
-# --------------------------------------------------
-c1, c2, c3 = st.columns(3)
-c1.metric("Total Sightings", len(filtered))
-c2.metric("Species Selected", len(selected_animals))
-c3.metric("Season", selected_season)
+# Keep only cells with co-occurrence
+cooccur_cells = cooccur_cells[cooccur_cells["species_count"] >= 2]
+
+# Convert back to lat/lon
+cooccur_cells["x"] = cooccur_cells["gx"] * grid_size
+cooccur_cells["y"] = cooccur_cells["gy"] * grid_size
+
+cooccur_gdf = gpd.GeoDataFrame(
+    cooccur_cells,
+    geometry=gpd.points_from_xy(
+        cooccur_cells.x,
+        cooccur_cells.y
+    ),
+    crs="EPSG:32736"
+).to_crs(epsg=4326)
 
 # --------------------------------------------------
 # MAP
@@ -137,42 +152,41 @@ species_colors = {
 
 m = folium.Map(location=[-1.4, 35.2], zoom_start=9)
 
-for _, row in zone_counts.iterrows():
-    color = species_colors.get(row["species"], "gray")
+# Individual sightings
+if show_points:
+    for _, row in filtered.iterrows():
+        folium.CircleMarker(
+            location=[row.geometry.y, row.geometry.x],
+            radius=3,
+            color=species_colors.get(row["species"], "gray"),
+            fill=True,
+            fill_opacity=0.4,
+        ).add_to(m)
 
-    folium.CircleMarker(
-        location=[row.lat_bin, row.lon_bin],
-        radius=6 + row["count"] * 0.4,
-        color=color,
-        fill=True,
-        fill_opacity=0.5
-    ).add_to(m)
-
-    if show_counts:
-        folium.Marker(
-            location=[row.lat_bin, row.lon_bin],
-            icon=folium.DivIcon(
-                html=f"""
-                <div style="
-                    font-size: 12px;
-                    font-weight: bold;
-                    color: black;
-                    text-align: center;
-                ">
-                    {row['count']}
-                </div>
-                """
-            )
+# Co-occurrence zones
+if show_cooccur:
+    for _, row in cooccur_gdf.iterrows():
+        folium.CircleMarker(
+            location=[row.geometry.y, row.geometry.x],
+            radius=12,
+            color="orange",
+            fill=True,
+            fill_opacity=0.7,
+            popup=f"Co-occurrence zone<br>Species count: {row['species_count']}"
         ).add_to(m)
 
 st_folium(m, width=1100, height=550)
 
 # --------------------------------------------------
-# SPECIES SUMMARY
+# SUMMARY
 # --------------------------------------------------
-st.subheader("Species-wise Sightings")
+st.subheader("Co-occurrence Summary")
 
-species_counts = (
+st.write(
+    f"Number of co-occurrence zones: **{len(cooccur_gdf)}**"
+)
+
+species_summary = (
     filtered
     .groupby("species")
     .size()
@@ -180,15 +194,13 @@ species_counts = (
     .sort_values("sightings", ascending=False)
 )
 
-st.dataframe(species_counts, use_container_width=True)
-st.bar_chart(species_counts.set_index("species")["sightings"])
+st.dataframe(species_summary, use_container_width=True)
 
 # --------------------------------------------------
 # FOOTNOTE
 # --------------------------------------------------
 st.markdown("""
 **Note:**  
-Data is based on GBIF occurrence records and represents observed sightings,
-not population estimates.
+Co-occurrence indicates shared spatial presence within a grid cell and does not
+imply direct interaction between species.
 """)
-
