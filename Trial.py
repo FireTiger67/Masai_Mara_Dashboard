@@ -62,6 +62,33 @@ filtered = gdf[gdf["season"] == season]
 filtered["lat_bin"] = filtered.geometry.y.round(2)
 filtered["lon_bin"] = filtered.geometry.x.round(2)
 
+# species counts for selected season
+species_counts = (
+    filtered
+    .groupby("species")
+    .size()
+    .reset_index(name="sightings")
+    .sort_values("sightings", ascending=False)
+)
+
+st.subheader(f"Big Five Sightings in {season} Season")
+st.dataframe(species_counts, use_container_width=True)
+
+st.subheader("Species-wise Sightings")
+
+st.bar_chart(
+    species_counts.set_index("species")["sightings"]
+)
+
+cols = st.columns(len(species_counts))
+
+for i, row in species_counts.iterrows():
+    cols[i].metric(
+        row["species"],
+        int(row["sightings"])
+    )
+
+
 zones = (
     filtered
     .groupby(["lat_bin", "lon_bin"])
