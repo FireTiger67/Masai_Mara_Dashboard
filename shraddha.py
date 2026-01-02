@@ -1,7 +1,4 @@
-# ================================
-# INSTALL REQUIRED PACKAGES
-# ================================
-!pip install -q streamlit-folium pygbif geopandas folium shapely pyproj
+
 
 # ================================
 # IMPORTS
