@@ -11,8 +11,8 @@ st.set_page_config(layout="wide")
 st.title("Masai Mara Wildlife Co-occurrence Dashboard")
 
 st.markdown("""
-Interactive dashboard to explore **where multiple Big Five species are spotted together**
-by **species**, **season**, and **year range**.
+Interactive geospatial dashboard to explore **Big Five wildlife sightings**
+by **species**, **season**, and **year range**, including **spatial co-occurrence zones**.
 """)
 
 # --------------------------------------------------
@@ -72,7 +72,7 @@ gdf = load_data()
 st.sidebar.header("Filters")
 
 selected_animals = st.sidebar.multiselect(
-    "Select Animals",
+    "Select Animal(s)",
     options=sorted(gdf["species"].unique()),
     default=sorted(gdf["species"].unique())
 )
@@ -91,6 +91,7 @@ year_range = st.sidebar.slider(
 
 show_points = st.sidebar.checkbox("Show individual sightings", value=True)
 show_cooccur = st.sidebar.checkbox("Show co-occurrence zones", value=True)
+show_counts = st.sidebar.checkbox("Show counts on map", value=True)
 
 # --------------------------------------------------
 # FILTER DATA
@@ -105,17 +106,49 @@ if selected_season != "All":
     filtered = filtered[filtered["season"] == selected_season]
 
 # --------------------------------------------------
+# MOST FREQUENT SEASON PER SPECIES (CARDS)
+# --------------------------------------------------
+st.subheader("Most Frequently Observed Season per Species")
+
+season_counts = (
+    filtered
+    .groupby(["species", "season"])
+    .size()
+    .reset_index(name="count")
+)
+
+top_seasons = (
+    season_counts
+    .sort_values(["species", "count"], ascending=[True, False])
+    .groupby("species")
+    .first()
+    .reset_index()
+)
+
+if not top_seasons.empty:
+    cols = st.columns(len(top_seasons))
+    for i, row in top_seasons.iterrows():
+        cols[i].metric(
+            label=row["species"],
+            value=row["season"]
+        )
+else:
+    st.info("No seasonal data available for the selected filters.")
+
+st.caption(
+    "Cards show the season in which each selected species is most frequently observed."
+)
+
+# --------------------------------------------------
 # CO-OCCURRENCE ANALYSIS (GRID BASED)
 # --------------------------------------------------
-# Project to meters for grid calculation
-filtered_m = filtered.to_crs(epsg=32736)  # UTM zone for Kenya
+filtered_m = filtered.to_crs(epsg=32736)  # meters (UTM)
 
 grid_size = 5000  # 5 km
 
 filtered_m["gx"] = (filtered_m.geometry.x // grid_size).astype(int)
 filtered_m["gy"] = (filtered_m.geometry.y // grid_size).astype(int)
 
-# Count unique species per grid cell
 cooccur_cells = (
     filtered_m
     .groupby(["gx", "gy"])["species"]
@@ -123,21 +156,37 @@ cooccur_cells = (
     .reset_index(name="species_count")
 )
 
-# Keep only cells with co-occurrence
 cooccur_cells = cooccur_cells[cooccur_cells["species_count"] >= 2]
 
-# Convert back to lat/lon
 cooccur_cells["x"] = cooccur_cells["gx"] * grid_size
 cooccur_cells["y"] = cooccur_cells["gy"] * grid_size
 
 cooccur_gdf = gpd.GeoDataFrame(
     cooccur_cells,
-    geometry=gpd.points_from_xy(
-        cooccur_cells.x,
-        cooccur_cells.y
-    ),
+    geometry=gpd.points_from_xy(cooccur_cells.x, cooccur_cells.y),
     crs="EPSG:32736"
 ).to_crs(epsg=4326)
+
+# --------------------------------------------------
+# GRID COUNTS FOR MAP LABELS
+# --------------------------------------------------
+filtered["lat_bin"] = filtered.geometry.y.round(2)
+filtered["lon_bin"] = filtered.geometry.x.round(2)
+
+zone_counts = (
+    filtered
+    .groupby(["species", "lat_bin", "lon_bin"])
+    .size()
+    .reset_index(name="count")
+)
+
+# --------------------------------------------------
+# METRICS
+# --------------------------------------------------
+c1, c2, c3 = st.columns(3)
+c1.metric("Total Sightings", len(filtered))
+c2.metric("Species Selected", len(selected_animals))
+c3.metric("Season", selected_season)
 
 # --------------------------------------------------
 # MAP
@@ -160,7 +209,7 @@ if show_points:
             radius=3,
             color=species_colors.get(row["species"], "gray"),
             fill=True,
-            fill_opacity=0.4,
+            fill_opacity=0.4
         ).add_to(m)
 
 # Co-occurrence zones
@@ -175,16 +224,31 @@ if show_cooccur:
             popup=f"Co-occurrence zone<br>Species count: {row['species_count']}"
         ).add_to(m)
 
+# Counts on map
+if show_counts:
+    for _, row in zone_counts.iterrows():
+        folium.Marker(
+            location=[row.lat_bin, row.lon_bin],
+            icon=folium.DivIcon(
+                html=f"""
+                <div style="
+                    font-size: 11px;
+                    font-weight: bold;
+                    color: black;
+                    text-align: center;
+                ">
+                    {row['count']}
+                </div>
+                """
+            )
+        ).add_to(m)
+
 st_folium(m, width=1100, height=550)
 
 # --------------------------------------------------
-# SUMMARY
+# SUMMARY TABLE & CHART
 # --------------------------------------------------
-st.subheader("Co-occurrence Summary")
-
-st.write(
-    f"Number of co-occurrence zones: **{len(cooccur_gdf)}**"
-)
+st.subheader("Species-wise Sightings (Current Selection)")
 
 species_summary = (
     filtered
@@ -195,12 +259,27 @@ species_summary = (
 )
 
 st.dataframe(species_summary, use_container_width=True)
+st.bar_chart(species_summary.set_index("species")["sightings"])
+
+# --------------------------------------------------
+# EXPLANATION
+# --------------------------------------------------
+st.markdown("### Co-occurrence Analysis Explanation")
+
+st.markdown("""
+Co-occurrence zones represent spatial grid cells (5 km × 5 km) where **two or more species**
+are observed within the same area. These zones indicate **shared habitat use or similar
+environmental preferences**, but do **not imply direct interaction** between species.
+
+This analysis provides quantitative evidence of **spatial overlap** in wildlife distributions
+and helps identify ecologically important zones in the Masai Mara.
+""")
 
 # --------------------------------------------------
 # FOOTNOTE
 # --------------------------------------------------
 st.markdown("""
 **Note:**  
-Co-occurrence indicates shared spatial presence within a grid cell and does not
-imply direct interaction between species.
+Sightings are based on GBIF occurrence records and represent observed presence,
+not population estimates.
 """)
